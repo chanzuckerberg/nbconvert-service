@@ -1,0 +1,168 @@
+{
+    "AWSTemplateFormatVersion" : "2010-09-09",
+    "Description": "Convert Jupyter notebooks to HTML using nbconvert.",
+    "Parameters": {
+        "LambdaCodeBucket": {
+            "Type": "String",
+            "Description": "S3 bucket with the lambda code zip file."
+        },
+        "LambdaCodeKey": {
+            "Type": "String",
+            "Description": "Path within the bucket to the zip file."
+        }
+    },
+    "Resources": {
+        "LambdaRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "RoleName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "lambda-role"]]},
+                "AssumeRolePolicyDocument": {
+                    "Version" : "2012-10-17",
+                    "Statement": [ {
+                        "Effect": "Allow",
+                        "Principal": {
+                            "Service": ["lambda.amazonaws.com"]
+                        },
+                        "Action": [ "sts:AssumeRole" ]
+                    } ]
+                },
+                "Path": "/"
+            }
+        },
+        "LambdaPolicy": {
+            "Type": "AWS::IAM::Policy",
+            "Properties": {
+                "PolicyName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "lambda-policy"]]},
+                "Roles": [{"Ref": "LambdaRole"}],
+                "PolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [ 
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "logs:CreateLogGroup",
+                                "logs:CreateLogStream",
+                                "logs:PutLogEvents"
+                            ],
+                            "Resource": "arn:aws:logs:*:*:*"
+                        }
+                    ]
+                }
+            }
+        },
+        "NotebookPostFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Description": "Convert Jupyter notebook to HTML.",
+				"Code": {
+                    "S3Bucket": {"Ref": "LambdaCodeBucket"},
+                    "S3Key": {"Ref": "LambdaCodeKey"}
+                },
+                "FunctionName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "notebook-post-lambda-fn"]]},
+                "Handler": "nbconvert_service.nbconvert_post",
+                "Role": {"Fn::GetAtt": ["LambdaRole", "Arn"]},
+                "Runtime": "python3.6",
+                "Timeout": 30,
+                "MemorySize": 1024
+            }
+        },
+        "NotebookPostPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "Action": "lambda:InvokeFunction",
+                "FunctionName": {"Fn::GetAtt": ["NotebookPostFunction", "Arn"]},
+                "Principal": "apigateway.amazonaws.com",
+                "SourceArn": {"Fn::Join": ["", [
+                    "arn:aws:execute-api:",
+                    {"Ref": "AWS::Region"},
+                    ":",
+                    {"Ref": "AWS::AccountId"},
+                    ":",
+                    {"Ref": "NbconvertServiceApi"},
+                    "/*/POST/notebook"
+                    ]]}
+            }
+        },
+        "NbconvertServiceApi": {
+            "Type": "AWS::ApiGateway::RestApi",
+            "Properties": {
+                "Name": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "rest-api"]]},
+                "Description": "Converts Jupyter notebooks to HTML.",
+                "Body": {
+                    "swagger": "2.0",
+                    "info": {
+                        "title": "Nbconvert Service API",
+                        "version": "0.0.1"
+                    },
+                    "schemes": ["https"],
+                    "consumes": ["application/json"],
+                    "produces": ["application/json"],
+                    "definitions": {
+                        "NotebookRequest": {
+                            "type": "object",
+                            "properties": {
+                                "metadata": {
+                                    "type": "object",
+                                    "properties": {
+                                        "doi": {
+                                            "type": "string"
+                                        }
+                                    }
+                                },
+                                "files": {
+                                    "type": "object",
+                                    "additionalProperties": "string"
+                                }
+                            }
+                        }
+                    },
+                    "paths": {
+                        "/notebook": {
+                            "post": {
+                                "parameters": [
+                                    {
+                                        "name": "body",
+                                        "in": "body",
+                                        "required": true,
+                                        "schema": {
+                                            "$ref": "#/definitions/NotebookRequest"
+                                        }
+                                    }
+                                ],
+                                "responses": {
+                                    "200": {
+                                        "description": "Converted HTMLs",
+                                        "schema": {
+                                            "$ref": "#/definitions/NotebookRequest"
+                                        }
+                                    }
+                                },
+                                "x-amazon-apigateway-integration": {
+                                    "type": "aws",
+                                    "uri": {"Fn::Join": [
+                                        "",
+                                        [
+                                            "arn:aws:apigateway:",
+                                            {"Ref": "AWS::Region"},
+                                            ":lambda:path",
+                                            "/2015-03-31/functions/",
+                                            {"Fn::GetAtt": ["NotebookPostFunction", "Arn"]},
+                                            "/invocations"
+                                        ]
+                                    ]},
+                                    "httpMethod": "POST",
+                                    "passthroughBehavior": "when_no_match",
+                                    "responses": {
+                                        "default": {
+                                            "statusCode": "200"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
